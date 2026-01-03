@@ -6,11 +6,11 @@ library(dplyr)
 library(duckdb)
 library(DBI)
 
-# Connect to DuckDB database
+# Connect to local DuckDB database
 con <- dbConnect(duckdb(), "meteorites.db")
 
 # Load meteorite data from database
-meteorites <- dbGetQuery(con, "SELECT * FROM meteorites WHERE mass > 1e6 LIMIT 500;") %>%
+meteorites <- dbGetQuery(con, "SELECT * FROM meteorites WHERE mass > 1e6 LIMIT 23;") %>%
   mutate(
     across(where(is.character), ~ gsub('^"|"$', '', .)),
     year = as.integer(year),
@@ -110,7 +110,7 @@ ui <- fluidPage(
                            "More Info and Name links connect to official ", 
                            a("Meteoritical Bulletin Database", 
                              href = "https://www.lpi.usra.edu/meteor/metbull.php", 
-                             target = "_blank"), " entries"),
+                             target = "_blank"), " entries."),
                        
                        hr(),
                        
@@ -124,7 +124,7 @@ ui <- fluidPage(
                                style = "color: #667eea;")),
                            p(style = "margin: 0; font-size: 0.9em;", 
                              a("View Code & Setup", 
-                               href = "https://github.com/yourusername/meteorite-explorer", 
+                               href = "https://github.com/amelialouise/shiny-meteorites", 
                                target = "_blank",
                                style = "color: #667eea;"), 
                              " on GitHub")
@@ -410,7 +410,8 @@ server <- function(input, output, session) {
   # Data table
   output$meteorite_table <- renderDT({
     data <- filtered_data() %>%
-      select(name, mass_tons, reclass, year, fall, lpi_entry) %>%
+      mutate(hemisphere = ifelse(lat >= 0, "Northern", "Southern")) %>% 
+      select(name, mass_tons, reclass, year, fall, lpi_entry, hemisphere) %>%
       mutate(
         mass_tons = round(mass_tons, 1),
         name = paste0('<a href="', lpi_entry, '" target="_blank">', name, '</a>')
@@ -419,7 +420,7 @@ server <- function(input, output, session) {
     
     datatable(data,
               escape = FALSE,
-              colnames = c("Name","Mass (tons)", "Type", "Year", "Discovery Method"),
+              colnames = c("Name","Mass (tons)", "Type", "Year", "Discovery Method", "Hemisphere"),
               options = list(
                 pageLength = 10,
                 scrollX = TRUE,
