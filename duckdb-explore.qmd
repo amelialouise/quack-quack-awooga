@@ -1,0 +1,358 @@
+---
+title: "What are we supposed to do here"
+format: gfm
+---
+
+We'll use a combo of R and Python on a duckDB in `in-memory` mode.
+
+From the [overview](https://duckdb.org/docs/stable/connect/overview) \>In in-memory mode, no data is persisted to disk, therefore, all data is lost when the process finishes.
+
+```{r setup}
+#| message: FALSE
+#| warning: FALSE
+library("duckdb")
+library("dplyr")
+library("reticulate")
+pyduckdb <- import("duckdb")
+```
+
+# Using the [R client - DuckDB](https://duckdb.org/docs/stable/clients/r)
+
+```{r}
+# create in-memory connection
+con <- dbConnect(duckdb())
+
+# load a virtual table (comparable to SQL VIEW)
+duckdb_register(con, "flights", nycflights13::flights)
+
+con %>% 
+  tbl("flights")
+```
+
+We can use duckdb to COPY data out and into a local folder in parquet format. This local set of parquet files can be accessed in DuckDB to avoid loading into R's memory.
+
+```{r}
+dbExecute(con, "COPY flights TO 'dataset' (FORMAT parquet, PARTITION_BY (year, month))")
+
+# csv option
+#dbExecute(con, "COPY flights TO 'dataset_csv' (FORMAT csv, PARTITION_BY (year, month))")
+
+# Summarize the dataset in DuckDB
+tbl(con, "read_parquet('dataset/**/*.parquet', hive_partitioning = true)")  %>% 
+  filter(month == "3")  %>% 
+  summarise(delay = mean(dep_time, na.rm = TRUE)) %>% 
+  collect()
+```
+
+Two ways to write tables that persist:
+
+```{r}
+dbWriteTable(con, "mtcars_table", mtcars)
+
+dbExecute(
+  con, 
+  "CREATE OR REPLACE TABLE trains AS
+  FROM \"http://blobs.duckdb.org/train_services.parquet\"
+  ;"
+)
+
+dbListTables(con)
+```
+
+# Using the [Python client - DuckDB](https://duckdb.org/docs/stable/clients/python/overview)
+
+The Python client has support for installing extensions, if needed.
+
+```{python}
+import duckdb as pyduckdb
+pycon = pyduckdb.connect()
+# view available extensions
+pycon.sql( 
+  "SELECT extension_name, installed, description FROM duckdb_extensions();"
+)
+```
+
+Working with JSON data is easy. Let's connect to [NASA's meteorite landings](https://data.nasa.gov/dataset/meteorite-landings) data to explore some geography.
+
+```{python}
+pycon.sql("""
+  create or replace table meteorites as 
+  (select * from read_json_auto('https://data.nasa.gov/docs/legacy/meteorite_landings/Meteorite_Landings.json'))
+  """
+)
+
+pycon.sql("SELECT * FROM meteorites LIMIT 1")
+```
+
+Let's unnest this to get a more human-readable view of the data.
+
+```{python}
+pycon.sql(""" 
+create or replace table meteorites_flat as (
+  with
+    data_table as (
+      select
+        unnest(meteorites.data, recursive := false) as values,
+        generate_subscripts(meteorites.data, 1) as index
+      from
+        meteorites
+    ),
+    
+  flattened_table as (
+  SELECT 
+    index,
+    unnest({
+    'name': values[9],
+    'id': values[10],
+    'nametype': values[11],
+    'reclass': values[12],
+    'mass': values[13],
+    'fall': values[14],
+    'year': values[15],
+    'reclat': values[16],
+    'reclong': values[17],
+    'GeoLocation': values[18],
+    'States': values[19],
+    'Counties': values[20]
+    }) 
+  from data_table
+  )
+  
+  SELECT 
+    cast(name as char) as name, 
+    cast(id as int) as id, 
+    cast(nametype as char) as nametype, 
+    cast(reclass as char) as reclass, 
+    cast(mass as numeric) as mass, 
+    cast(fall as char) as fall, 
+    cast(year as date) as year,
+    cast(reclat as numeric) as lat,
+    cast(reclong as numeric) as long,
+    cast(States as char) as state,
+    cast(Counties as char) as county
+  FROM flattened_table
+);
+""")
+
+pycon.sql("SELECT * FROM meteorites_flat LIMIT 3")
+```
+
+State and County must be only for NA landings?
+
+```{python}
+pycon.sql(
+  """
+  SELECT state, county, 
+  count(*) as total
+  FROM meteorites_flat
+  WHERE state is not NULL
+  GROUP BY state, county
+  having total > 10
+  order by total desc
+  """
+)
+```
+
+Interesting! Let's bring in state and county FIPS codes to identify these in a more familiar way.
+
+```{python}
+pycon.sql("""
+  create or replace table fips_codes as (
+    select * from read_json_auto('https://api.census.gov/data/2010/dec/sf1?get=NAME&for=county:*')
+  );
+  """
+)
+
+pycon.sql("""
+  create or replace table fips_flat as ( 
+  select
+    unnest({'name': json[1], 'state': json[2], 'county': json[3]})
+  from
+    fips_codes
+  );
+  """
+)
+
+pycon.sql("SELECT * FROM fips_flat LIMIT 3")
+```
+
+## Persistent Database - cuz why not!
+Neat, let's store just the flat tables in a persistent DB.
+
+Remove the tables with raw JSON imports so we can reuse those nicer names.
+
+```{python}
+pycon.sql("SHOW TABLES")
+pycon.sql("DROP TABLE IF EXISTS fips_codes")
+pycon.sql("DROP TABLE IF EXISTS meteorites")
+```
+
+Clean-up the fips table to add county and state name columns.
+
+```{python}
+pycon.sql("""
+create or replace table fips as (
+  select
+  name,
+  unnest({'county': split(name, ' County') [1], 'state': split(name, ', ') [2]}),
+  county as fips_county,
+  state as fips_state
+from
+  fips_flat
+where
+  name != 'NAME'
+)
+""")
+
+pycon.sql("SELECT * from fips LIMIT 3;")
+```
+
+Almost there, just need to rename the meteorites table, then add primary and foreign keys.
+
+```{python}
+pycon.sql("ALTER TABLE meteorites_flat RENAME TO meteorites;")
+pycon.sql("ALTER TABLE fips ADD PRIMARY KEY (fips_county, fips_state)")
+pycon.sql("DESCRIBE fips")
+pycon.sql("DESCRIBE meteorites")
+```
+
+At the time of writing this, support for adding foreign keys through an `ALTER TABLE` command was not yet implemented ([see here](https://github.com/duckdb/duckdb/issues/15835#issuecomment-2911085455). So the workaround is to create a new table to set that constraint, copy over the data from the previous table, and then rename + delete original table.
+
+```{python}
+pycon.sql("DROP TABLE if exists fips_flat;")
+pycon.sql("SHOW TABLES")
+pycon.sql("DESCRIBE meteorites;")
+```
+
+```{python}
+pycon.sql(
+  """
+  CREATE TABLE meteorites_new (
+  name varchar,
+  id integer,
+  nametype varchar,
+  reclass varchar,
+  mass numeric,
+  fall varchar,
+  year DATE,
+  lat numeric,
+  long numeric,
+  state varchar,
+  county varchar,
+  FOREIGN KEY (county, state) REFERENCES fips(fips_county, fips_state)
+  );
+  """
+)
+
+pycon.sql("INSERT INTO meteorites_new SELECT * FROM meteorites;")
+```
+Wow! We got a 'Violates foreign key constraint because key "fips_county: "429", fips_state: "50"" does not exist in the referenced table' error. Indeed, there is no county of 429 for the state of Vermont. What's up with that? Texas is the only state with a county of 429. Let's check out what meteorite this is... 
+
+```{python}
+pycon.sql("SELECT * FROM fips where county = 'Allegan' and state = 'Michigan'")
+pycon.sql("SELECT * FROM meteorites where county = '\"429\"'")
+```
+The lat and long land us in [Allegan, Michigan](https://maps.app.goo.gl/TjsTf8mAcdcFf34x8), and sure enough there are a ton of sites documenting this little guy:
+
+- [*The Allegan, Michigan Meteorite: A Confused Agglomerate*](https://www.meteorite-times.com/the-allegan-michigan-meteorite-a-confused-agglomerate/) 
+
+- [*Allegan entry on the Meteoritical Society page](https://www.lpi.usra.edu/meteor/metbull.php?code=2276) 
+
+Looks like the state and county data from NASA is not actually FIPS codes. DAMMIT.
+
+```{python}
+pycon.sql("SELECT name, year, mass, lat, long, county FROM meteorites where state = '\"50\"'")
+```
+These are all in Michigan! Lat and lon seem accurate. For now let's only save the meteorites data in the duckDB. Then we can easily call it from R for the remainder of this session.  
+
+```{python}
+pycon.sql("DROP TABLE IF EXISTS meteorites_new;")
+pycon.sql("DROP TABLE IF EXISTS fips;")
+pycon.sql("SHOW TABLES")
+```
+
+```{python}
+pycon.sql("""
+  ATTACH 'meteorites.db';
+  COPY FROM DATABASE memory TO meteorites;
+  DETACH meteorites;
+  """
+)
+```
+
+
+# Misc cleanup
+
+```{python}
+import duckdb as pyduckdb
+pycon = pyduckdb.connect("meteorites.db")
+```
+
+```{python}
+pycon.sql("SELECT name, year FROM meteorites where id = 57150")
+```
+## Pre-app db final processing
+
+- Fix 2102 date error for id = 57150
+
+```{python}
+pycon.sql("""
+  UPDATE meteorites
+  SET year = DATE '2010-01-01'
+  WHERE id = 57150;
+"""
+)
+```
+
+
+- Format year as integer. 
+- Add field for Lunar Inst. url 
+
+```{python}
+pycon.sql("""
+ CREATE OR REPLACE TABLE meteorites AS (
+  WITH meteorites_complete AS (
+  SELECT
+    "name",
+    id,
+    nametype,
+    reclass,
+    mass,
+    fall,
+    EXTRACT(year FROM "year") AS "year",
+    lat,
+    long,
+    state,
+    county,
+    CONCAT_WS('', 'https://www.lpi.usra.edu/meteor/metbull.php?code=', id) AS lpi_entry
+  FROM meteorites
+  )
+  SELECT meteorites_complete.*
+  FROM meteorites_complete
+  WHERE (NOT((lat IS NULL))) AND (NOT((mass IS NULL))) AND (NOT(("year" IS NULL)))
+);
+""")
+
+pycon.sql("DESCRIBE meteorites;")
+```
+
+
+
+
+# duckDB UI launcher
+
+Writing the above SQL was aided by working in the DuckDB UI! Seriously, that interface is pretty sweet.
+
+[![DuckDB Browser UI](images/duckdb-ui.png){fig-alt="Learn more about the UI in the linked article" fig-align="center"}](https://duckdb.org/2025/03/12/duckdb-ui)
+
+Calling it in a browser is as easy as...
+
+```{python}
+pycon.sql("CALL start_ui();")
+```
+
+Kill the UI connection
+
+```{r}
+dbExecute(con, "CALL stop_ui_server();")
+```
