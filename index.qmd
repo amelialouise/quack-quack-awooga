@@ -1,0 +1,58 @@
+---
+title: "Meteorites"
+format: gfm
+---
+
+```{r setup}
+#| message: FALSE
+#| warning: FALSE
+library("duckdb")
+library("dplyr")
+library("reticulate")
+pyduckdb <- import("duckdb")
+
+mycon <- dbConnect(duckdb(dbdir = "meteorites.db"))
+```
+
+```{r}
+summary_result <- dbGetQuery(mycon, "SUMMARIZE meteorites;")
+print(summary_result)
+```
+```{r}
+mycon %>% 
+  tbl("meteorites") %>%
+    mutate(
+      mass_kg = mass / 1000,
+      mass_tons = mass / 1000000,
+      size_category = case_when(
+        mass_tons < 0.001 ~ "Tiny (< 1kg)",
+        mass_tons < 0.005 ~ "Small (1-5kg)", 
+        mass_tons < 0.02 ~ "Medium (5-20kg)",
+        mass_tons < 5 ~ "Large (20kg-5t)",
+        TRUE ~ "Massive (> 5t)"
+      ),
+      era = case_when(
+        year < 1800 ~ "Ancient (pre-1800)",
+        year < 1900 ~ "Historical (1800-1899)",
+        year < 1950 ~ "Early Modern (1900-1949)",
+        year < 2000 ~ "Late Modern (1950-1999)",
+        TRUE ~ "Recent (2000+)"
+      )
+    ) %>% 
+  count(size_category, era) %>% 
+  tidyr::pivot_wider(values_from = n, names_from = size_category)
+```
+
+
+
+This meteorite explorer app features:
+
+🗺️ Interactive World Map: Shows meteorite locations with markers sized by mass and colored by classification. Click markers for detailed popup information.
+
+📈 Timeline Visualization: A bubble chart showing discovery timeline vs mass, with meteorites colored by classification type. The y-axis uses a log scale to better show the range of masses.
+
+🔍 Dynamic Filtering: Filter by discovery year range, meteorite classification, and size categories.
+
+📊 Quick Stats Panel: Shows real-time statistics about the filtered meteorites including count, total mass, average mass, and heaviest specimen.
+
+🔬 Detailed Data Table: Sortable and searchable table with visual mass indicators.
