@@ -198,7 +198,7 @@ server <- function(input, output, session) {
     data <- filtered_data()
     total_meteorites <- nrow(data)
     total_mass <- sum(data$mass_tons, na.rm = TRUE)
-    avg_mass <- round(mean(data$mass_kg, na.rm = TRUE), 1)
+    avg_mass <- round(mean(data$mass_tons, na.rm = TRUE), 1)
     
     # Handle case where no data is available
     if (total_meteorites == 0) {
@@ -213,7 +213,7 @@ server <- function(input, output, session) {
     
     paste0("Meteorites: ", total_meteorites, "\n",
            "Total Mass: ", round(total_mass, 1), " tons\n",
-           "Avg Mass: ", avg_mass, " kgs\n",
+           "Avg Mass: ", avg_mass, " tons\n",
            "Heaviest: ", heaviest_name)
   })
   
@@ -257,7 +257,7 @@ server <- function(input, output, session) {
       "<div style='font-size: 14px; line-height: 1.4;'>",
       "<h4 style='margin: 0 0 10px 0; color: #2c3e50;'>🌠 ", data$name, "</h4>",
       "<p style='margin: 5px 0;'><strong>Type:</strong> ", data$reclass, "</p>",
-      "<p style='margin: 5px 0;'><strong>Mass:</strong> ", format(round(data$mass_tons, 1), big.mark = ","), " kg</p>",
+      "<p style='margin: 5px 0;'><strong>Mass:</strong> ", format(round(data$mass_tons, 1), big.mark = ","), " tons</p>",
       "<p style='margin: 5px 0;'><strong>Year:</strong> ", data$year, "</p>",
       "<p style='margin: 5px 0;'><strong>Location:</strong> ", round(data$lat, 3), "°, ", round(data$long, 3), "°</p>",
       "<p style='margin: 10px 0 0 0;'><a href='", data$lpi_entry, "' target='_blank' style='color: #667eea;'>🔗 More Info</a></p>",
@@ -279,7 +279,7 @@ server <- function(input, output, session) {
         fillColor = ~pal(mass_category),
         fillOpacity = 0.8,
         popup = popups,
-        label = ~paste0(name, " (", round(mass_kg, 1), " kg)")
+        label = ~paste0(name, " (", round(mass_tons, 1), " tons)")
       ) %>%
       addLegend(
         pal = pal,
@@ -420,10 +420,11 @@ server <- function(input, output, session) {
     
     datatable(data,
               escape = FALSE,
-              colnames = c("Name","Mass (tons)", "Type", "Year", "Discovery Method", "Hemisphere"),
+              colnames = c("Name", "Mass (tons)", "Type", "Year", "Discovery Method", "Hemisphere"),
               options = list(
                 pageLength = 10,
                 scrollX = TRUE,
+                order = list(list(1, 'desc')),
                 dom = 'ltip',
                 columnDefs = list(
                   list(targets = ncol(data) - 1, width = "100px")  # Set width for link column

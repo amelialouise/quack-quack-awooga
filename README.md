@@ -9,4 +9,4 @@ I really wanted to try out the new-ish ui and other stuff.  IT'S COOL.
 
 ## Shiny app
 
-Made a little baby shiny app [here].
+Live demo [here](https://amelia-vargas.shinyapps.io/duckDB-yo/).
