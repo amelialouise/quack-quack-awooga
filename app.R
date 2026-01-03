@@ -10,7 +10,7 @@ library(DBI)
 con <- dbConnect(duckdb(), "meteorites.db")
 
 # Load meteorite data from database
-meteorites <- dbGetQuery(con, "SELECT * FROM meteorites WHERE mass > 1e6 LIMIT 200;") %>%
+meteorites <- dbGetQuery(con, "SELECT * FROM meteorites WHERE mass > 1e6 LIMIT 500;") %>%
   mutate(
     across(where(is.character), ~ gsub('^"|"$', '', .)),
     year = as.integer(year),
@@ -26,7 +26,6 @@ meteorites <- dbGetQuery(con, "SELECT * FROM meteorites WHERE mass > 1e6 LIMIT 2
                         include.lowest = TRUE)  # Include the lowest value
   )
 
-
 # Close connection (we'll reconnect in reactive contexts if needed)
 dbDisconnect(con)
 
@@ -35,19 +34,19 @@ ui <- fluidPage(
   tags$head(
     tags$style(HTML("
       .content-wrapper {
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        min-height: 100vh;
-        padding: 20px 0;
+          background: linear-gradient(135deg, #6b7280 0%, #4b5563 50%, #374151 100%);
+          min-height: 100vh;
+          padding: 20px 0;
       }
       .main-title {
-        color: white;
+        color: #f3f4f6;
         text-align: center;
         font-size: 2.5em;
         margin-bottom: 30px;
         text-shadow: 2px 2px 4px rgba(0,0,0,0.3);
       }
       .panel {
-        background: white;
+        background: #f3f4f6;
         border-radius: 10px;
         padding: 20px;
         margin-bottom: 20px;
@@ -56,12 +55,13 @@ ui <- fluidPage(
       .sidebar-panel {
         background: rgba(255,255,255,0.95);
         border-radius: 10px;
+        border: none;
         padding: 20px;
         box-shadow: 0 4px 8px rgba(0,0,0,0.1);
       }
       .stats-box {
         background: #f8f9fa;
-        border-left: 4px solid #667eea;
+        border: none;
         padding: 15px;
         margin: 15px 0;
         border-radius: 5px;
@@ -71,12 +71,12 @@ ui <- fluidPage(
   
   div(class = "content-wrapper",
       div(class = "container-fluid",
-          div(class = "main-title", "🌌 Meteorite Explorer: Giants from Space"),
+          div(class = "main-title", "🌌 Meteorite Explorer: Rocks from Space!"),
           
           fluidRow(
             column(3,
                    div(class = "sidebar-panel",
-                       h4("🔍 Explore Controls"),
+                       h4("🔍 Search Options"),
                        
                        sliderInput("year_range", 
                                    "Discovery Year Range:",
@@ -105,7 +105,30 @@ ui <- fluidPage(
                        
                        hr(),
                        
-                       p("💡 Click on the bright meteorite markers to see detailed information! 🔥")
+                       p("Click on the bright meteorite markers to see detailed information! 🔥"),
+                       div(class = "text-muted small mt-2",
+                           "More Info and Name links connect to official ", 
+                           a("Meteoritical Bulletin Database", 
+                             href = "https://www.lpi.usra.edu/meteor/metbull.php", 
+                             target = "_blank"), " entries"),
+                       
+                       hr(),
+                       
+                       h5("📖 About"),
+                       div(class = "stats-box",
+                           p(style = "margin-bottom: 10px; font-size: 0.9em;", 
+                             "Data from ", 
+                             a("NASA's Meteorite Database", 
+                               href = "https://data.nasa.gov/dataset/meteorite-landings", 
+                               target = "_blank",
+                               style = "color: #667eea;")),
+                           p(style = "margin: 0; font-size: 0.9em;", 
+                             a("View Code & Setup", 
+                               href = "https://github.com/yourusername/meteorite-explorer", 
+                               target = "_blank",
+                               style = "color: #667eea;"), 
+                             " on GitHub")
+                       )
                    )
             ),
             
@@ -113,13 +136,23 @@ ui <- fluidPage(
                    fluidRow(
                      column(6,
                             div(class = "panel",
-                                h4("🗺️ Global Meteorite Distribution"),
+                                div(style = "display: flex; justify-content: space-between; align-items: center;",
+                                    h4("🗺️ Global Meteorite Distribution"),
+                                    actionButton("expand_map", "⛶", 
+                                                 class = "btn btn-sm btn-outline-secondary",
+                                                 title = "Expand map")
+                                ),
                                 leafletOutput("meteorite_map", height = "400px")
                             )
                      ),
                      column(6,
                             div(class = "panel",
-                                h4("📈 Discovery Timeline & Mass Distribution"),
+                                div(style = "display: flex; justify-content: space-between; align-items: center;",
+                                    h4("📈 Discovery Timeline & Mass Distribution"),
+                                    actionButton("expand_timeline", "⛶", 
+                                                 class = "btn btn-sm btn-outline-secondary",
+                                                 title = "Expand timeline")
+                                ),
                                 plotlyOutput("timeline_plot", height = "400px")
                             )
                      )
@@ -128,7 +161,7 @@ ui <- fluidPage(
                    fluidRow(
                      column(12,
                             div(class = "panel",
-                                h4("🔬 Detailed Meteorite Database"),
+                                h4("🔬 Meteorite Landings"),
                                 DTOutput("meteorite_table")
                             )
                      )
@@ -184,8 +217,8 @@ server <- function(input, output, session) {
            "Heaviest: ", heaviest_name)
   })
   
-  # Interactive map
-  output$meteorite_map <- renderLeaflet({
+  # Create shared map reactive
+  shared_map <- reactive({
     data <- filtered_data()
     
     if (nrow(data) == 0) {
@@ -243,25 +276,23 @@ server <- function(input, output, session) {
         radius = radius_vals,
         color = "white",
         weight = 2,
-        fillColor = ~pal(mass_category),  # Use the palette function
+        fillColor = ~pal(mass_category),
         fillOpacity = 0.8,
         popup = popups,
         label = ~paste0(name, " (", round(mass_kg, 1), " kg)")
       ) %>%
       addLegend(
-        pal = pal,  # Use the same palette
-        values = ~mass_category,  # Use the mass categories
-        title = "Mass Categories",
+        pal = pal,
+        values = ~mass_category,
+        title = "Mass Categories", 
         position = "bottomright",
         opacity = 0.8
       ) %>%
       setView(lng = center_lng, lat = center_lat, zoom = zoom_level)
   })
   
-  
-  
-  # Timeline and mass visualization
-  output$timeline_plot <- renderPlotly({
+  # Create shared timeline reactive  
+  shared_timeline <- reactive({
     data <- filtered_data()
     
     if (nrow(data) == 0) {
@@ -289,24 +320,24 @@ server <- function(input, output, session) {
     year_padding <- max(1, (year_max - year_min) * 0.02)
     
     # Create scatter plot with uniform sizes
-    p <- plot_ly(data, 
-                 x = ~year, 
-                 y = ~mass_tons,
-                 color = ~hemisphere,
-                 colors = hemisphere_colors,
-                 text = ~paste("Name:", name, 
-                               "<br>Mass:", format(round(mass_tons, 2), big.mark = ","), "tons",
-                               "<br>Year:", year,
-                               "<br>Hemisphere:", hemisphere,
-                               "<br>Location:", round(lat, 2), "°, ", round(long, 2), "°"),
-                 hovertemplate = "%{text}<extra></extra>",
-                 type = "scatter",
-                 mode = "markers",
-                 marker = list(
-                   size = 8,  # Uniform size for all dots
-                   line = list(width = 1, color = "white"),
-                   opacity = 0.4
-                 )) %>%
+    plot_ly(data, 
+            x = ~year, 
+            y = ~mass_tons,
+            color = ~hemisphere,
+            colors = hemisphere_colors,
+            text = ~paste("Name:", name, 
+                          "<br>Mass:", format(round(mass_tons, 2), big.mark = ","), "tons",
+                          "<br>Year:", year,
+                          "<br>Hemisphere:", hemisphere,
+                          "<br>Location:", round(lat, 2), "°, ", round(long, 2), "°"),
+            hovertemplate = "%{text}<extra></extra>",
+            type = "scatter",
+            mode = "markers",
+            marker = list(
+              size = 14,  # Uniform size for all dots
+              line = list(width = 1, color = "white"),
+              opacity = 0.7
+            )) %>%
       layout(
         title = list(text = "Meteorite Discoveries: Timeline by Hemisphere", font = list(size = 16)),
         xaxis = list(
@@ -336,29 +367,66 @@ server <- function(input, output, session) {
         displayModeBar = FALSE,
         showTips = FALSE
       )
-    
-    p
   })
   
+  # Now your outputs just call the shared reactives
+  output$meteorite_map <- renderLeaflet({
+    shared_map()
+  })
   
+  output$meteorite_map_full <- renderLeaflet({
+    shared_map()
+  })
   
+  output$timeline_plot <- renderPlotly({
+    shared_timeline()
+  })
+  
+  output$timeline_plot_full <- renderPlotly({
+    shared_timeline()
+  })
+  
+  # Modal event handlers
+  observeEvent(input$expand_map, {
+    showModal(modalDialog(
+      title = "🗺️ Global Meteorite Distribution - Full View",
+      leafletOutput("meteorite_map_full", height = "70vh"),
+      size = "l",
+      easyClose = TRUE,
+      footer = modalButton("Close")
+    ))
+  })
+  
+  observeEvent(input$expand_timeline, {
+    showModal(modalDialog(
+      title = "📈 Discovery Timeline - Full View", 
+      plotlyOutput("timeline_plot_full", height = "70vh"),
+      size = "l",
+      easyClose = TRUE,
+      footer = modalButton("Close")
+    ))
+  })
   
   # Data table
   output$meteorite_table <- renderDT({
     data <- filtered_data() %>%
-      select(name, reclass, mass_tons, year, lat, long) %>%
+      select(name, mass_tons, reclass, year, fall, lpi_entry) %>%
       mutate(
         mass_tons = round(mass_tons, 1),
-        lat = round(lat, 3),
-        long = round(long, 3)
-      )
+        name = paste0('<a href="', lpi_entry, '" target="_blank">', name, '</a>')
+      ) %>% 
+      select(-lpi_entry)
     
     datatable(data,
-              colnames = c("Name", "Classification", "Mass (tons)", "Year", "Latitude", "Longitude"),
+              escape = FALSE,
+              colnames = c("Name","Mass (tons)", "Type", "Year", "Discovery Method"),
               options = list(
                 pageLength = 10,
                 scrollX = TRUE,
-                dom = 'ltip'
+                dom = 'ltip',
+                columnDefs = list(
+                  list(targets = ncol(data) - 1, width = "100px")  # Set width for link column
+                )
               ),
               rownames = FALSE) %>%
       formatStyle("mass_tons", 
@@ -370,3 +438,4 @@ server <- function(input, output, session) {
 }
 
 shinyApp(ui = ui, server = server)
+          
